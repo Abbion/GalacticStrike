@@ -4,51 +4,55 @@
 use ggez::{
     event,
     glam::*,
-    graphics::{self, Color},
-    Context, GameResult,
+    graphics::{self},
+    Context, GameResult, winit::event::VirtualKeyCode,
 };
 
-struct MainState {
-    pos_x: f32,
-    circle: graphics::Mesh,
+struct GameState {
+    
 }
 
-impl MainState {
-    fn new(ctx: &mut Context) -> GameResult<MainState> {
-        let circle = graphics::Mesh::new_circle(
-            ctx,
-            graphics::DrawMode::fill(),
-            vec2(0., 0.),
-            100.0,
-            2.0,
-            Color::RED,
-        )?;
-
-        Ok(MainState { pos_x: 0.0, circle })
+impl GameState {
+    fn new() -> GameResult<GameState> {
+        Ok(GameState {})
     }
 }
 
-impl event::EventHandler<ggez::GameError> for MainState {
+impl event::EventHandler<ggez::GameError> for GameState {
     fn update(&mut self, _ctx: &mut Context) -> GameResult {
-        self.pos_x = self.pos_x % 800.0 + 1.0;
         Ok(())
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
-        let mut canvas =
+        let canvas =
             graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.3, 1.0]));
 
-        canvas.draw(&self.circle, Vec2::new(self.pos_x, 380.0));
-
         canvas.finish(ctx)?;
+
+        Ok(())
+    }
+
+    fn key_down_event(&mut self, _ctx: &mut Context, input: ggez::input::keyboard::KeyInput, _repeated: bool) -> GameResult {
+        match input.keycode{
+            Some(key) => match key {
+                VirtualKeyCode::Left => println!("<=="),
+                VirtualKeyCode::Right => println!("==>"),
+                VirtualKeyCode::Space => println!("Pow!"),
+                 _ => ()  
+            },
+            None => ()
+        };
 
         Ok(())
     }
 }
 
 pub fn main() -> GameResult {
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez");
-    let (mut ctx, event_loop) = cb.build()?;
-    let state = MainState::new(&mut ctx)?;
-    event::run(ctx, event_loop, state)
+    let (ctx, events_loop) = ggez::ContextBuilder::new("galactic_strike", "Abbion")
+    .window_setup(ggez::conf::WindowSetup::default().title("Galactic strike"))
+    .window_mode(ggez::conf::WindowMode::default().dimensions(800.0, 600.0))
+    .build()?;
+    
+    let state = GameState::new()?;
+    event::run(ctx, events_loop, state)
 }
