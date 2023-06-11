@@ -1,12 +1,14 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
+use std::collections::btree_map::Range;
+
 use ggez::audio;
 use ggez::audio::SoundSource;
 use ggez::conf;
 use ggez::event::{self, EventHandler};
 use ggez::glam::*;
-use ggez::graphics::{self, Color};
+use ggez::graphics::{self, Color, Rect};
 use ggez::input::keyboard::KeyCode;
 use ggez::timer;
 use ggez::{Context, ContextBuilder, GameResult};
@@ -39,7 +41,7 @@ const ENEMY_LIFE : f32 = 1.0;
 const SHIELD_LIFE : f32 = 10.0;
 const PLAYER_SPEED : f32 = 320.0;
 const PLAYER_SHOT_TIME : f32 = 0.5;
-const BULLET_SPEED : f32 = 700.0;
+const BULLET_SPEED : f32 = 750.0;
 
 fn create_player() -> Actor {
     Actor { 
@@ -119,6 +121,16 @@ fn handle_out_off_screen(actor: &mut Actor, window_size: Vec2) {
     }
 }
 
+fn create_enemies(assets: &Assets) -> Vec<Actor> {
+    let mut enemies : Vec<Actor> = Vec::new();
+
+    let mut enemie = create_enemy();
+    enemie.size = Vec2{ x: assets.enemie_images[0].width() as f32, y: assets.enemie_images[0].height() as f32 };
+    enemies.push(enemie);    
+
+    enemies
+}
+
 #[derive(Debug)]
 struct InputState {
     left: bool,
@@ -140,6 +152,8 @@ struct Assets {
     player_image: graphics::Image,
     player_bullet_image: graphics::Image,
     player_shot_sound: audio::Source,
+    hit_sound: audio::Source,
+    enemie_images: Vec<graphics::Image>,
 }
 
 impl Assets {
@@ -159,10 +173,28 @@ impl Assets {
             Err(error) => panic!("Can't load player shot sound: {:?}", error),
         };
 
+        let hit_sound = match audio::Source::new(ctx, "/hit.wav") {
+            Ok(sound) => sound,
+            Err(error) => panic!("Can't load hit shot sound: {:?}", error),
+        };
+
+        let mut enemie_images: Vec<graphics::Image> = Vec::with_capacity(3);
+
+        for i in 1..4 {
+            let enemie = match graphics::Image::from_path(ctx, format!("/invader{}.png", i)) {
+                Ok(image) => image,
+                Err(error) => panic!("Can't load enemie {} image: {:?}", i, error),
+            };
+
+            enemie_images.push(enemie);
+        }
+
         Assets {
             player_image,
             player_bullet_image,
             player_shot_sound,
+            hit_sound,
+            enemie_images,
         }
     }
 
@@ -170,6 +202,7 @@ impl Assets {
         match actor.tag {
             ActorType::Player => &self.player_image,
             ActorType::Bullet => &self.player_bullet_image,
+            ActorType::Enemy => &self.enemie_images[0],
             _ => panic!("No image for: {:?}", actor.tag)
         }
     }
@@ -191,12 +224,24 @@ fn draw_actor(assets: &mut Assets, canvas: &mut graphics::Canvas, actor: &Actor,
     canvas.draw(image, drawparams);
 }
 
+fn point_in_rect(point: Vec2, rect: Rect) -> bool {
+
+    if point.x > rect.x - rect.w / 2.0 && point.x < rect.w / 2.0 &&
+       point.y > rect.y - rect.h / 2.0 && point.y < rect.h / 2.0
+    {
+       return true; 
+    }
+
+    false
+}
+
 struct GameState {
     input: InputState,
     assets: Assets,
     player: Actor,
     player_shot_timeout: f32,
     player_bullets: Vec<Actor>,
+    enemies: Vec<Actor>,
     window: Window,
 }
 
@@ -208,7 +253,7 @@ impl GameState {
 
         player.position.y = (window_height / 2.0) - (window_height / 8.0);
         player.size = Vec2{ x: assets.player_image.width() as f32, y: assets.player_image.height() as f32 };
-
+        let enemies = create_enemies(&assets);
 
         Ok(GameState { 
             input: InputState::default(),
@@ -216,6 +261,7 @@ impl GameState {
             player,
             player_shot_timeout: 0.0,
             player_bullets: Vec::new(),
+            enemies: enemies,
             window: Window {
                 size : Vec2{ x : window_width, y : window_height }
                 }
@@ -239,6 +285,38 @@ impl GameState {
 
     fn clear_dead_actors(&mut self) {
         self.player_bullets.retain(|bullet| bullet.hp > 0.0);
+        self.enemies.retain(|enemie| enemie.hp > 0.0);
+    }
+
+    fn handle_collision(&mut self, ctx: &Context) -> GameResult {
+        for enemie in &mut self.enemies  {
+            if enemie.hp < 0.0 {
+                continue;
+            }
+
+            let enemie_rect = Rect{ x: enemie.position.x, y: enemie.position.y, w: enemie.size.x, h: enemie.size.y };
+
+            for player_bullet in &mut self.player_bullets {
+                if player_bullet.hp < 0.0 {
+                    continue;
+                }
+
+                let bullet_top = player_bullet.position + Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
+                let bullet_down = player_bullet.position - Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
+                
+                let hit = point_in_rect(bullet_top, enemie_rect) | point_in_rect(bullet_down, enemie_rect);
+
+                if hit {
+                    player_bullet.hp = -1.0;
+                    enemie.hp = -1.0;
+                    self.assets.hit_sound.play(ctx)?;
+
+                    break;
+                }
+            }
+        }
+        
+        Ok(())
     }
 }
 
@@ -262,6 +340,7 @@ impl event::EventHandler for GameState {
                 handle_out_off_screen(act, self.window.size);
             }
 
+            self.handle_collision(ctx)?;
             self.clear_dead_actors();
         }
 
@@ -272,14 +351,18 @@ impl event::EventHandler for GameState {
         let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.3, 1.0]));
 
         let assets = &mut self.assets;
-        
+        let world_coords = (self.window.size.x, self.window.size.y);
+
         let p = &self.player;
-        draw_actor(assets, &mut canvas, p, (self.window.size.x, self.window.size.y));
+        draw_actor(assets, &mut canvas, p, world_coords);
 
         for bullet in &self.player_bullets {
-            draw_actor(assets, &mut canvas, &bullet, (self.window.size.x, self.window.size.y));
+            draw_actor(assets, &mut canvas, &bullet, world_coords);
         }
-
+        
+        for enemie in &self.enemies{
+            draw_actor(assets, &mut canvas, enemie, world_coords);
+        }
 
         canvas.finish(ctx)?;
 
