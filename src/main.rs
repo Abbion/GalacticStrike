@@ -20,6 +20,11 @@ enum ActorType{
 }
 
 #[derive(Debug)]
+struct Window {
+    size : Vec2, 
+}
+
+#[derive(Debug)]
 struct Actor{
     tag: ActorType,
     position: Vec2,
@@ -33,6 +38,8 @@ const BULLET_LIFE : f32 = 1.0;
 const ENEMY_LIFE : f32 = 1.0;
 const SHIELD_LIFE : f32 = 10.0;
 const PLAYER_SPEED : f32 = 320.0;
+const PLAYER_SHOT_TIME : f32 = 0.5;
+const BULLET_SPEED : f32 = 700.0;
 
 fn create_player() -> Actor {
     Actor { 
@@ -75,22 +82,55 @@ fn create_shield() -> Actor {
 }
 
 fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
-    if input.xaxis != 0.0 {
-        actor.direction.x = input.xaxis;
-        actor.position.x += input.xaxis * PLAYER_SPEED * dt;
+    actor.direction.x = 0.0;
+
+    if input.left {
+        actor.direction.x += -1.0;
+    }
+    if input.right {
+        actor.direction.x += 1.0;
+    }
+
+    actor.position.x += actor.direction.x * PLAYER_SPEED * dt;
+}
+
+fn player_check_collision_with_walls(actor: &mut Actor, window_size: Vec2) {
+    let left_edge = actor.position.x - (actor.size.x / 2.0);
+    let right_edge = actor.position.x + (actor.size.x / 2.0);
+
+    if left_edge < -window_size.x / 2.0 {
+        actor.position.x = -window_size.x / 2.0 + actor.size.x / 2.0;
+    }
+    else if right_edge > window_size.x / 2.0 {
+        actor.position.x = (window_size.x / 2.0) - (actor.size.x / 2.0);
+    }
+}
+
+fn update_actor_position(actor: &mut Actor, dt: f32) {
+    actor.position.y += actor.direction.y * (BULLET_SPEED * dt);
+}
+
+fn handle_out_off_screen(actor: &mut Actor, window_size: Vec2) {
+    if  actor.position.y < -window_size.y / 2.0 ||
+        actor.position.y > window_size.y / 2.0 ||
+        actor.position.x < -window_size.x / 2.0 ||
+        actor.position.x > window_size.x / 2.0 {
+        actor.hp = -1.0;
     }
 }
 
 #[derive(Debug)]
 struct InputState {
-    xaxis: f32,
+    left: bool,
+    right: bool,
     fire: bool,
 }
 
 impl Default for InputState {
     fn default() -> Self {
         InputState {
-            xaxis: 0.0,
+            left: false,
+            right: false,
             fire: false,
         }
     }
@@ -98,23 +138,38 @@ impl Default for InputState {
 
 struct Assets {
     player_image: graphics::Image,
+    player_bullet_image: graphics::Image,
+    player_shot_sound: audio::Source,
 }
 
 impl Assets {
     fn new(ctx: &mut Context) -> Assets {
         let player_image = match graphics::Image::from_path(ctx, "/player.png")  {
             Ok(image) => image,
-            Err(error) => panic!("Can't load players image: {:?}", error),
+            Err(error) => panic!("Can't load player image: {:?}", error),
+        };
+
+        let player_bullet_image = match graphics::Image::from_path(ctx, "/player_bullet.png") {
+            Ok(image) => image,
+            Err(error) => panic!("Can't load player bullet image: {:?}", error),
+        };
+
+        let player_shot_sound = match audio::Source::new(ctx, "/player_shoot_sound.wav") {
+            Ok(sound) => sound,
+            Err(error) => panic!("Can't load player shot sound: {:?}", error),
         };
 
         Assets {
             player_image,
+            player_bullet_image,
+            player_shot_sound,
         }
     }
 
     fn actor_image(&self, actor: &Actor) -> &graphics::Image {
         match actor.tag {
             ActorType::Player => &self.player_image,
+            ActorType::Bullet => &self.player_bullet_image,
             _ => panic!("No image for: {:?}", actor.tag)
         }
     }
@@ -140,22 +195,54 @@ struct GameState {
     input: InputState,
     assets: Assets,
     player: Actor,
+    player_shot_timeout: f32,
+    player_bullets: Vec<Actor>,
+    window: Window,
 }
 
 impl GameState {
     fn new(ctx: &mut Context) -> GameResult<GameState> {
+        let (window_width, window_height) = ctx.gfx.drawable_size();
         let assets = Assets::new(ctx);
-        let player = create_player();
+        let mut player = create_player();
+
+        player.position.y = (window_height / 2.0) - (window_height / 8.0);
+        player.size = Vec2{ x: assets.player_image.width() as f32, y: assets.player_image.height() as f32 };
+
 
         Ok(GameState { 
             input: InputState::default(),
             assets,
             player,
+            player_shot_timeout: 0.0,
+            player_bullets: Vec::new(),
+            window: Window {
+                size : Vec2{ x : window_width, y : window_height }
+                }
          })
+    }
+
+    fn fire_player_shot(&mut self, ctx: &Context) -> GameResult {
+        self.player_shot_timeout = PLAYER_SHOT_TIME;
+
+        let player = &self.player;
+        let mut bullet = create_bullet();
+        bullet.position = player.position + Vec2{x: 0.0, y: -10.0};
+        bullet.direction.y = -1.0;
+        
+        self.player_bullets.push(bullet);
+
+        self.assets.player_shot_sound.play(ctx)?;
+
+        Ok(())
+    }
+
+    fn clear_dead_actors(&mut self) {
+        self.player_bullets.retain(|bullet| bullet.hp > 0.0);
     }
 }
 
-impl event::EventHandler<ggez::GameError> for GameState {
+impl event::EventHandler for GameState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         const FPS_LIMIT: u32 = 60;
 
@@ -163,6 +250,19 @@ impl event::EventHandler<ggez::GameError> for GameState {
             let seconds = 1.0 / (FPS_LIMIT as f32);
 
             player_handle_input(&mut self.player, &self.input, seconds);
+            player_check_collision_with_walls(&mut self.player, self.window.size);
+
+            self.player_shot_timeout -= seconds;
+            if self.input.fire && self.player_shot_timeout < 0.0 {
+                self.fire_player_shot(ctx)?;
+            }
+
+            for act in &mut self.player_bullets {
+                update_actor_position(act, seconds);
+                handle_out_off_screen(act, self.window.size);
+            }
+
+            self.clear_dead_actors();
         }
 
         Ok(())
@@ -174,7 +274,11 @@ impl event::EventHandler<ggez::GameError> for GameState {
         let assets = &mut self.assets;
         
         let p = &self.player;
-        draw_actor(assets, &mut canvas, p, (800.0, 600.0));
+        draw_actor(assets, &mut canvas, p, (self.window.size.x, self.window.size.y));
+
+        for bullet in &self.player_bullets {
+            draw_actor(assets, &mut canvas, &bullet, (self.window.size.x, self.window.size.y));
+        }
 
 
         canvas.finish(ctx)?;
@@ -187,15 +291,13 @@ impl event::EventHandler<ggez::GameError> for GameState {
         match input.keycode{
             Some(key) => match key {
                 KeyCode::Left => {
-                    self.input.xaxis = -1.0;
+                    self.input.left = true;
                 },
                 KeyCode::Right => {
-                    self.input.xaxis = 1.0;
+                    self.input.right = true;
                 },
                 KeyCode::Space => {
-                    if self.input.fire == false {
-                        self.input.fire = true;
-                    }
+                    self.input.fire = true;
                 },
                  _ => ()  
             },
@@ -207,9 +309,15 @@ impl event::EventHandler<ggez::GameError> for GameState {
     fn key_up_event(&mut self, _ctx: &mut Context, input: ggez::input::keyboard::KeyInput) -> GameResult {
         match input.keycode{
             Some(key) => match key {
-                KeyCode::Left | KeyCode::Right => {
-                    self.input.xaxis = 0.0;
+                KeyCode::Left => {
+                    self.input.left = false;
                 },
+                KeyCode::Right => {
+                    self.input.right = false;
+                },
+                KeyCode::Space => {
+                    self.input.fire = false;
+                }
                 _ => ()
             },
             None => ()
