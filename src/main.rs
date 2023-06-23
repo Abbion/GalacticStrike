@@ -13,12 +13,22 @@ use ggez::input::keyboard::KeyCode;
 use ggez::timer;
 use ggez::{Context, ContextBuilder, GameResult};
 
-#[derive(Debug)]
-enum ActorType{
+#[derive(Debug, Copy, Clone)]
+enum ActorType {
     Player,
     Bullet,
-    Enemy,
+    EnemyA,
+    EnemyB,
+    EnemyC,
+    EnemyE,
     Shield,
+}
+
+#[derive(PartialEq)]
+enum EnemyWallCollisionType {
+    Left,
+    Right,
+    None
 }
 
 #[derive(Debug)]
@@ -32,7 +42,20 @@ struct Actor{
     position: Vec2,
     direction: Vec2,
     size: Vec2,
+    scale: Vec2,
     hp: f32,
+}
+struct EnemiesControler{
+    enemies_rect: Rect,
+    time_to_update: f32,
+    tick_time: f32,
+    last_collision_type: EnemyWallCollisionType,
+}
+
+impl Actor {
+    fn get_rect(&self) -> Rect {
+        Rect{ x: self.position.x - (self.size.x / 2.0), y: self.position.y - (self.size.y / 2.0), w: self.position.x + (self.size.x / 2.0), h: self.position.y + (self.size.y / 2.0) }
+    }
 }
 
 const PLAYER_LIFE : f32 = 1.0;
@@ -43,12 +66,19 @@ const PLAYER_SPEED : f32 = 320.0;
 const PLAYER_SHOT_TIME : f32 = 0.5;
 const BULLET_SPEED : f32 = 750.0;
 
+const ENEMY_HORIZONTAL_SPACING : f32 = 20.0;
+const ENEMY_VERTICAL_SPACING : f32 = 20.0;
+const ENEMY_SCALE : f32 = 0.7;
+const ENEMY_START_TICK: f32 = 0.5;
+const ENEMY_JUMP : f32 = 10.0;
+
 fn create_player() -> Actor {
     Actor { 
         tag: ActorType::Player,
         position: Vec2::ZERO,
         direction: Vec2::ZERO,
         size: Vec2::ZERO,
+        scale: Vec2{ x: 1.0, y: 1.0 },
         hp: PLAYER_LIFE,
      }
 }
@@ -59,16 +89,18 @@ fn create_bullet() -> Actor {
         position: Vec2::ZERO,
         direction: Vec2::ZERO,
         size: Vec2::ZERO,
+        scale: Vec2{ x: 1.0, y: 1.0 },
         hp: BULLET_LIFE,
      }
 }
 
 fn create_enemy() -> Actor {
     Actor{
-        tag: ActorType::Enemy,
+        tag: ActorType::EnemyA,
         position: Vec2::ZERO,
         direction: Vec2::ZERO,
         size: Vec2::ZERO,
+        scale: Vec2{ x: 1.0, y: 1.0 },
         hp: ENEMY_LIFE,
     }
 }
@@ -79,8 +111,18 @@ fn create_shield() -> Actor {
         position: Vec2::ZERO,
         direction: Vec2::ZERO,
         size: Vec2::ZERO,
+        scale: Vec2{ x: 1.0, y: 1.0 },
         hp: SHIELD_LIFE,
     }
+}
+
+fn create_enemies_controler() -> EnemiesControler {
+    EnemiesControler { 
+        enemies_rect: Rect::zero(),
+        time_to_update: 0.0,
+        tick_time: ENEMY_START_TICK,
+        last_collision_type: EnemyWallCollisionType::None,
+     }
 }
 
 fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
@@ -123,12 +165,115 @@ fn handle_out_off_screen(actor: &mut Actor, window_size: Vec2) {
 
 fn create_enemies(assets: &Assets) -> Vec<Actor> {
     let mut enemies : Vec<Actor> = Vec::new();
+    let enemy_size = Vec2{ x: assets.enemie_images[0].width() as f32 * ENEMY_SCALE, y: assets.enemie_images[0].height() as f32 * ENEMY_SCALE} ;
 
-    let mut enemie = create_enemy();
-    enemie.size = Vec2{ x: assets.enemie_images[0].width() as f32, y: assets.enemie_images[0].height() as f32 };
-    enemies.push(enemie);    
+    for i in 0..5 {
+        let next_position_vertical = (-5.0 * (enemy_size.y + ENEMY_VERTICAL_SPACING)) + (i as f32 * (enemy_size.y + ENEMY_VERTICAL_SPACING));
+        let enemy_tag = match i  {
+            0 => ActorType::EnemyC,
+            1..=2 => ActorType::EnemyB,
+            3..=4 => ActorType::EnemyA,
+            _ => panic!("No enemy type for this index {}", i)
+        }; 
+
+        for j in 0..11 {
+            let mut enemie = create_enemy();
+            let next_position_horizontal = (-5.0 * (enemy_size.x + ENEMY_HORIZONTAL_SPACING)) + (j as f32 * (enemy_size.x + ENEMY_HORIZONTAL_SPACING));
+            
+            enemie.tag = enemy_tag;
+            enemie.position = Vec2{ x: next_position_horizontal, y: next_position_vertical};
+            enemie.size = Vec2{ x: enemy_size.x, y: enemy_size.y };
+            enemie.scale = Vec2{ x: ENEMY_SCALE, y: ENEMY_SCALE};
+            enemie.direction = Vec2{ x: 1.0, y: 0.0 };
+            enemies.push(enemie);
+        }
+    }
 
     enemies
+}
+
+fn update_enemies_position(enemies_controler: &mut EnemiesControler, enemies: &mut Vec<Actor>, delta_time: f32) 
+{
+    enemies_controler.time_to_update += delta_time;
+
+    if enemies_controler.time_to_update > enemies_controler.tick_time {
+        for enemy in enemies {
+            enemy.position += enemy.direction * ENEMY_JUMP;
+        }
+
+        enemies_controler.time_to_update = 0.0;
+    }
+}
+
+fn enemies_check_collision_with_walls(enemies_controler: &mut EnemiesControler, enemies: &mut Vec<Actor>, window_size: Vec2)
+{
+    if enemies_controler.time_to_update == 0.0 {
+
+        let top_left = Vec2{ x: enemies_controler.enemies_rect.x, y: enemies_controler.enemies_rect.y };
+        let bottom_right = Vec2{ x: enemies_controler.enemies_rect.w, y: enemies_controler.enemies_rect.h };
+
+        if bottom_right.x > window_size.x / 2.0 {
+            let diff = bottom_right.x - (window_size.x / 2.0);
+
+            for enemy in enemies {
+                enemy.direction = Vec2{ x: -1.0, y: 0.0 };
+                enemy.position += enemy.direction * diff;
+                enemy.direction = Vec2{ x: 0.0, y: 1.0 };
+                enemies_controler.last_collision_type = EnemyWallCollisionType::Right;
+            }
+        }
+        else if top_left.x < -window_size.x / 2.0 {
+            let diff = -(window_size.x / 2.0) - top_left.x;
+
+            for enemy in enemies {
+                enemy.direction = Vec2{ x: 1.0, y: 0.0 };
+                enemy.position += enemy.direction * diff;
+                enemy.direction = Vec2{ x: 0.0, y: 1.0 };
+                enemies_controler.last_collision_type = EnemyWallCollisionType::Left;
+            }
+        }
+        else if enemies_controler.last_collision_type == EnemyWallCollisionType::Right {
+            enemies_controler.last_collision_type = EnemyWallCollisionType::None;
+
+            for enemy in enemies {
+                enemy.direction = Vec2{ x: -1.0, y: 0.0 };
+            }
+        }
+        else if enemies_controler.last_collision_type == EnemyWallCollisionType::Left {
+            enemies_controler.last_collision_type = EnemyWallCollisionType::None;
+
+            for enemy in enemies {
+                enemy.direction = Vec2{ x: 1.0, y: 0.0 };
+            }
+        }
+    }
+}
+
+fn get_enemies_rect(enemies: &Vec<Actor>) -> Rect
+{
+    let mut enemies_rect = enemies[0].get_rect();
+
+    for enemy in enemies.iter().skip(1) {
+        let enemie_rect = enemy.get_rect();
+
+        if enemie_rect.x < enemies_rect.x {
+            enemies_rect.x = enemie_rect.x
+        }
+
+        if enemie_rect.y < enemies_rect.y {
+            enemies_rect.y = enemie_rect.y
+        }
+
+        if enemie_rect.w > enemies_rect.w {
+            enemies_rect.w = enemie_rect.w
+        }
+
+        if enemie_rect.h > enemies_rect.h {
+            enemies_rect.h = enemie_rect.h
+        }
+    }
+
+    enemies_rect
 }
 
 #[derive(Debug)]
@@ -202,7 +347,9 @@ impl Assets {
         match actor.tag {
             ActorType::Player => &self.player_image,
             ActorType::Bullet => &self.player_bullet_image,
-            ActorType::Enemy => &self.enemie_images[0],
+            ActorType::EnemyA => &self.enemie_images[0],
+            ActorType::EnemyB => &self.enemie_images[1],
+            ActorType::EnemyC => &self.enemie_images[2],
             _ => panic!("No image for: {:?}", actor.tag)
         }
     }
@@ -220,14 +367,16 @@ fn draw_actor(assets: &mut Assets, canvas: &mut graphics::Canvas, actor: &Actor,
     let image = assets.actor_image(actor);
     let drawparams = graphics::DrawParam::new()
         .dest(pos)
+        .scale(actor.scale)
         .offset(Vec2::new(0.5, 0.5));
+
     canvas.draw(image, drawparams);
 }
 
-fn point_in_rect(point: Vec2, rect: Rect) -> bool {
+fn point_in_rect(point: &Vec2, rect: &Rect) -> bool {
 
-    if point.x > rect.x - rect.w / 2.0 && point.x < rect.w / 2.0 &&
-       point.y > rect.y - rect.h / 2.0 && point.y < rect.h / 2.0
+    if point.x > rect.x && point.x < rect.w &&
+       point.y > rect.y && point.y < rect.h
     {
        return true; 
     }
@@ -242,6 +391,7 @@ struct GameState {
     player_shot_timeout: f32,
     player_bullets: Vec<Actor>,
     enemies: Vec<Actor>,
+    enemies_controler: EnemiesControler,
     window: Window,
 }
 
@@ -262,6 +412,7 @@ impl GameState {
             player_shot_timeout: 0.0,
             player_bullets: Vec::new(),
             enemies: enemies,
+            enemies_controler: create_enemies_controler(),
             window: Window {
                 size : Vec2{ x : window_width, y : window_height }
                 }
@@ -294,7 +445,7 @@ impl GameState {
                 continue;
             }
 
-            let enemie_rect = Rect{ x: enemie.position.x, y: enemie.position.y, w: enemie.size.x, h: enemie.size.y };
+            let enemie_rect =  enemie.get_rect();
 
             for player_bullet in &mut self.player_bullets {
                 if player_bullet.hp < 0.0 {
@@ -303,9 +454,10 @@ impl GameState {
 
                 let bullet_top = player_bullet.position + Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
                 let bullet_down = player_bullet.position - Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
-                
-                let hit = point_in_rect(bullet_top, enemie_rect) | point_in_rect(bullet_down, enemie_rect);
 
+                
+                let hit = point_in_rect(&bullet_top, &enemie_rect) | point_in_rect(&bullet_down, &enemie_rect);
+                
                 if hit {
                     player_bullet.hp = -1.0;
                     enemie.hp = -1.0;
@@ -325,20 +477,24 @@ impl event::EventHandler for GameState {
         const FPS_LIMIT: u32 = 60;
 
         while ctx.time.check_update_time(FPS_LIMIT) {
-            let seconds = 1.0 / (FPS_LIMIT as f32);
-
-            player_handle_input(&mut self.player, &self.input, seconds);
+            let delta_time = ctx.time.delta().as_secs_f32();
+            
+            player_handle_input(&mut self.player, &self.input, delta_time);
             player_check_collision_with_walls(&mut self.player, self.window.size);
 
-            self.player_shot_timeout -= seconds;
+            self.player_shot_timeout -= delta_time;
             if self.input.fire && self.player_shot_timeout < 0.0 {
                 self.fire_player_shot(ctx)?;
             }
 
             for act in &mut self.player_bullets {
-                update_actor_position(act, seconds);
+                update_actor_position(act, delta_time);
                 handle_out_off_screen(act, self.window.size);
             }
+
+            update_enemies_position(&mut self.enemies_controler, &mut self.enemies, delta_time);
+            self.enemies_controler.enemies_rect = get_enemies_rect(&self.enemies);
+            enemies_check_collision_with_walls(&mut self.enemies_controler, &mut self.enemies, self.window.size);
 
             self.handle_collision(ctx)?;
             self.clear_dead_actors();
@@ -413,7 +569,7 @@ impl event::EventHandler for GameState {
 pub fn main() -> GameResult {
     let (mut ctx, events_loop) = ggez::ContextBuilder::new("galactic_strike", "Abbion")
     .window_setup(ggez::conf::WindowSetup::default().title("Galactic strike"))
-    .window_mode(ggez::conf::WindowMode::default().dimensions(800.0, 600.0))
+    .window_mode(ggez::conf::WindowMode::default().dimensions(650.0, 700.0))
     .build()?;
     
     let state = GameState::new(&mut ctx)?;
