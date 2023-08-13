@@ -68,15 +68,15 @@ impl Actor {
     }
 }
 
-const PLAYER_LIFE : f32 = 1.0;
+const PLAYER_LIFE : f32 = 3.0;
 const BULLET_LIFE : f32 = 1.0;
 const ENEMY_LIFE : f32 = 1.0;
 const SHIELD_LIFE : f32 = 10.0;
 const PLAYER_SPEED : f32 = 320.0;
 const PLAYER_SHOT_TIME : f32 = 0.5;
-const PLAYER_BULLET_SPEED : f32 = 750.0;
-const ENEMY_BULLET_SPEED_SLOW : f32 = 350.0;
-const ENEMY_BULLET_SPEED_FAST : f32 = 550.0;
+const PLAYER_BULLET_SPEED : f32 = 750.0;    //750
+const ENEMY_BULLET_SPEED_SLOW : f32 = 350.0; //350
+const ENEMY_BULLET_SPEED_FAST : f32 = 550.0; //550
 
 const ENEMY_HORIZONTAL_SPACING : f32 = 20.0;
 const ENEMY_VERTICAL_SPACING : f32 = 20.0;
@@ -548,12 +548,14 @@ impl GameState {
          })
     }
 
+
     fn fire_player_shot(&mut self, ctx: &Context) -> GameResult {
         self.player_shot_timeout = PLAYER_SHOT_TIME;
 
         let player = &self.player;
         let mut bullet = create_bullet(ActorType::PlayerBullet);
         bullet.position = player.position + Vec2{x: 0.0, y: -10.0};
+        bullet.size = Vec2{ x: self.assets.player_bullet_image.width() as f32 * 8.0, y: self.assets.player_bullet_image.height() as f32 };
         bullet.direction.y = -1.0;
         
         self.player_bullets.push(bullet);
@@ -567,6 +569,22 @@ impl GameState {
         self.player_bullets.retain(|bullet| bullet.hp > 0.0);
         self.enemy_bullets.retain(|bullet| bullet.hp > 0.0);
         self.enemies.retain(|enemie| enemie.hp > 0.0);
+    }
+
+    fn reset_game(&mut self){
+        self.player_bullets.clear();
+        self.enemy_bullets.clear();
+        self.enemies.clear();
+
+        let mut player = create_player();
+        player.position.y = (self.window.size.x / 2.0) - (self.window.size.y / 8.0);
+        player.size = Vec2{ x: self.assets.player_image.width() as f32, y: self.assets.player_image.height() as f32 };
+        let enemies = create_enemies(&self.assets);
+
+        self.player = player;
+        self.enemies = enemies;
+        self.player_shot_timeout = 0.0;
+        self.enemies_controler = create_enemies_controler();
     }
 
     fn handle_collision(&mut self, ctx: &Context) -> GameResult {
@@ -619,6 +637,35 @@ impl GameState {
         if update_enemies_rect == true {
             self.enemies_controler.enemies_rect = get_enemies_rect(&self.enemies);
         }
+
+        for enemy_bullet in &mut self.enemy_bullets {
+            let player_rect = self.player.get_rect();
+            let bullet_top = enemy_bullet.position + Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+            let bullet_down = enemy_bullet.position - Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+
+            //Hit player
+            let hit = point_in_rect(&bullet_top, &player_rect, ) | point_in_rect(&bullet_down, &player_rect);
+
+            if hit {
+                enemy_bullet.hp = 0.0;
+                self.player.hp -= 1.0;
+            }
+
+            //Hit player bullet
+            for player_bullet in &mut self.player_bullets {
+                let player_bullet_rect = player_bullet.get_rect();
+                let bullet_top = enemy_bullet.position + Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+                let bullet_down = enemy_bullet.position - Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+
+                let hit = point_in_rect(&bullet_top, &player_bullet_rect, ) | point_in_rect(&bullet_down, &player_bullet_rect);
+
+                if hit {
+                    player_bullet.hp = 0.0;
+                    enemy_bullet.hp = 0.0;
+                }
+            }
+        }
+
         
         Ok(())
     }
@@ -659,6 +706,10 @@ impl event::EventHandler for GameState {
 
             self.handle_collision(ctx)?;
             self.clear_dead_actors();
+
+            if self.player.hp <= 0.0 {
+                self.reset_game();
+            }
         }
 
         Ok(())
