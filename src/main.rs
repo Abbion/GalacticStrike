@@ -218,8 +218,22 @@ fn create_enemies(assets: &Assets) -> Vec<Actor> {
     enemies
 }
 
-fn update_enemies_position(enemies_controler: &mut EnemiesControler, enemies: &mut Vec<Actor>, delta_time: f32) 
-{
+fn create_shileds(assets: &Assets, window: &Window) -> Vec<Actor> {
+    let mut shields : Vec<Actor> = Vec::new();
+    let x_offset = window.size.x / 7.0;
+    let x_start = (window.size.x - assets.shield_image.height() as f32) / 2.2; //2.2 is a magic number
+
+    for i in 0..3 {
+        let mut shield = create_shield();
+        shield.position = Vec2{ x: -x_start + (x_offset * (1.0 + (i * 2) as f32)), y: window.size.y / 3.5};
+        shield.size = Vec2{ x: assets.shield_image.width() as f32, y: assets.shield_image.height() as f32 };
+        shields.push(shield);
+    }
+
+    shields
+}
+
+fn update_enemies_position(enemies_controler: &mut EnemiesControler, enemies: &mut Vec<Actor>, delta_time: f32) {
     if enemies.len() < 1 {
         return;
     }
@@ -409,6 +423,7 @@ struct Assets {
     player_bullet_image: graphics::Image,
     enemy_bullet_slow_image: graphics::Image,
     enemy_bullet_fast_image: graphics::Image,
+    shield_image: graphics::Image,
     player_shot_sound: audio::Source,
     hit_sound: audio::Source,
     enemie_images: Vec<graphics::Image>,
@@ -436,16 +451,6 @@ impl Assets {
             Err(error) => panic!("Can't load enemy bullet fast image: {:?}", error),
         };
 
-        let player_shot_sound = match audio::Source::new(ctx, "/player_shoot_sound.wav") {
-            Ok(sound) => sound,
-            Err(error) => panic!("Can't load player shot sound: {:?}", error),
-        };
-
-        let hit_sound = match audio::Source::new(ctx, "/hit.wav") {
-            Ok(sound) => sound,
-            Err(error) => panic!("Can't load hit shot sound: {:?}", error),
-        };
-
         let mut enemie_images: Vec<graphics::Image> = Vec::with_capacity(3);
 
         for i in 1..4 {
@@ -457,11 +462,27 @@ impl Assets {
             enemie_images.push(enemie);
         }
 
+        let shield_image = match graphics::Image::from_path(ctx, "/shield.png") {
+            Ok(image) => image,
+            Err(error) => panic!("Can't load shield image: {:?}", error),
+        };
+
+        let player_shot_sound = match audio::Source::new(ctx, "/player_shoot_sound.wav") {
+            Ok(sound) => sound,
+            Err(error) => panic!("Can't load player shot sound: {:?}", error),
+        };
+
+        let hit_sound = match audio::Source::new(ctx, "/hit.wav") {
+            Ok(sound) => sound,
+            Err(error) => panic!("Can't load hit shot sound: {:?}", error),
+        };
+
         Assets {
             player_image,
             player_bullet_image,
             enemy_bullet_slow_image,
             enemy_bullet_fast_image,
+            shield_image,
             player_shot_sound,
             hit_sound,
             enemie_images,
@@ -477,6 +498,7 @@ impl Assets {
             ActorType::EnemyA => &self.enemie_images[0],
             ActorType::EnemyB => &self.enemie_images[1],
             ActorType::EnemyC => &self.enemie_images[2],
+            ActorType::Shield => &self.shield_image,
             _ => panic!("No image for: {:?}", actor.tag)
         }
     }
@@ -519,6 +541,7 @@ struct GameState {
     player_bullets: Vec<Actor>,
     enemy_bullets: Vec<Actor>,
     enemies: Vec<Actor>,
+    shields: Vec<Actor>,
     enemies_controler: EnemiesControler,
     window: Window,
 }
@@ -526,12 +549,17 @@ struct GameState {
 impl GameState {
     fn new(ctx: &mut Context) -> GameResult<GameState> {
         let (window_width, window_height) = ctx.gfx.drawable_size();
+        let window = Window {
+            size : Vec2{ x : window_width, y : window_height }
+        };
+
         let assets = Assets::new(ctx);
         let mut player = create_player();
 
         player.position.y = (window_height / 2.0) - (window_height / 8.0);
         player.size = Vec2{ x: assets.player_image.width() as f32, y: assets.player_image.height() as f32 };
         let enemies = create_enemies(&assets);
+        let shields = create_shileds(&assets, &window);
 
         Ok(GameState { 
             input: InputState::default(),
@@ -541,10 +569,9 @@ impl GameState {
             player_bullets: Vec::new(),
             enemy_bullets: Vec::new(),
             enemies: enemies,
+            shields: shields,
             enemies_controler: create_enemies_controler(),
-            window: Window {
-                size : Vec2{ x : window_width, y : window_height }
-                }
+            window
          })
     }
 
@@ -734,6 +761,10 @@ impl event::EventHandler for GameState {
         
         for enemie in &self.enemies{
             draw_actor(assets, &mut canvas, enemie, world_coords);
+        }
+
+        for shield in &self.shields {
+            draw_actor(assets, &mut canvas, shield, world_coords);
         }
 
         canvas.finish(ctx)?;
