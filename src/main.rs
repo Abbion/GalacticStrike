@@ -2,22 +2,19 @@
 #![allow(clippy::unnecessary_wraps)]
 
 use std::collections::HashMap;
-use std::{vec, string};
-use std::fs::File;
-use ggez::context::Has;
+use std::vec;
 use rand::Rng;
 use std::mem;
 use half::f16;
 
 use ggez::audio;
 use ggez::audio::SoundSource;
-use ggez::conf;
-use ggez::event::{self, EventHandler};
+use ggez::event::{self};
 use ggez::glam::*;
-use ggez::graphics::{self, Color, Rect, Text};
+use ggez::graphics::{self, Rect, Text};
 use ggez::input::keyboard::KeyCode;
 use ggez::timer;
-use ggez::{Context, ContextBuilder, GameResult};
+use ggez::{Context, GameResult};
 
 #[derive(Debug, Copy, Clone)]
 enum ActorType {
@@ -28,7 +25,6 @@ enum ActorType {
     EnemyA,
     EnemyB,
     EnemyC,
-    EnemyE,
     Shield
 }
 
@@ -94,7 +90,7 @@ const PLAYER_LIFE : f32 = 3.0;
 const BULLET_LIFE : f32 = 1.0;
 const ENEMY_LIFE : f32 = 1.0;
 const SHIELD_LIFE : f32 = 5.0;
-const PLAYER_SPEED : f32 = 100.0; //320
+const PLAYER_SPEED : f32 = 320.0; //320
 const PLAYER_SHOT_TIME : f32 = 0.5;
 const PLAYER_BULLET_SPEED : f32 = 750.0;    //750
 const ENEMY_BULLET_SPEED_SLOW : f32 = 350.0; //350
@@ -314,7 +310,6 @@ fn update_enemies_position(enemies_controler: &mut EnemiesControler, enemies: &m
 fn enemies_check_collision_with_walls(enemies_controler: &mut EnemiesControler, enemies: &mut Vec<Actor>, window_size: Vec2)
 {
     if enemies_controler.time_to_update == 0.0 && enemies_controler.time_to_update_inner == 0.0 {
-
         let top_left = Vec2{ x: enemies_controler.enemies_rect.x, y: enemies_controler.enemies_rect.y };
         let bottom_right = Vec2{ x: enemies_controler.enemies_rect.w, y: enemies_controler.enemies_rect.h };
 
@@ -355,13 +350,22 @@ fn enemies_check_collision_with_walls(enemies_controler: &mut EnemiesControler, 
     }
 }
 
+fn check_if_enemies_reached_base(enemies_controler: &EnemiesControler) -> bool {
+    if enemies_controler.enemies_rect.bottom() > 100.0 {
+        return  true;
+    }
+
+    false
+}
+
 fn get_enemies_rect(enemies: &Vec<Actor>) -> Rect
 {
     if enemies.len() < 1 {
         return Rect::zero();
     }
 
-    let mut enemies_rect = enemies[0].get_rect();
+    let first_enemie_rect = &enemies[0].get_rect();
+    let mut enemies_rect = Rect { x: first_enemie_rect.x, y: first_enemie_rect.y, w: first_enemie_rect.x + first_enemie_rect.w, h: first_enemie_rect.y + first_enemie_rect.h };
 
     for enemy in enemies.iter().skip(1) {
         let enemie_rect = enemy.get_rect();
@@ -697,7 +701,7 @@ impl GameState {
         self.enemies.retain(|enemie| enemie.hp > 0.0);
     }
 
-    fn reset_game(&mut self){
+    fn reset_game(&mut self, game_over: bool){
         self.player_bullets.clear();
         self.enemy_bullets.clear();
         self.enemies.clear();
@@ -705,6 +709,11 @@ impl GameState {
         let mut player = create_player();
         player.position.y = (self.window.size.y / 2.0) - (self.window.size.y / 8.0);
         player.size = Vec2{ x: self.assets.player_image.width() as f32, y: self.assets.player_image.height() as f32 };
+
+        if !game_over {
+            player.hp = self.player.hp;
+        }
+
         let enemies = create_enemies(&self.assets);
 
         self.player = player;
@@ -712,31 +721,45 @@ impl GameState {
         self.player_shot_timeout = 0.0;
         self.enemies_controler = create_enemies_controler();
         
-        self.max_score = self.score;
-        self.score = 0;
+        if game_over {
+            self.shields = create_shileds(&self.assets, &self.window);
 
-        let score_text = self.text_fields.get_mut(&TextTag::Score);
-        match score_text {
-            Some(text_field) => {
-                text_field.text = format!("Score: {}", self.score);
-            }
-            _=> ()
-        }
+            self.text_fields.remove(&TextTag::ShieldHp1);
+            self.text_fields.remove(&TextTag::ShieldHp2);
+            self.text_fields.remove(&TextTag::ShieldHp3);
 
-        let max_score_text = self.text_fields.get_mut(&TextTag::MaxScore);
-        match max_score_text {
-            Some(text_field) => {
-                text_field.text = format!("Max score: {}", self.max_score);
-            }
-            _=> ()
-        }
+            let (window_width, window_height) = (self.window.size.x, self.window.size.y);
 
-        let player_life_text = self.text_fields.get_mut(&TextTag::PlayerLife);
-        match player_life_text {
-            Some(text_field) => {
-                text_field.text = format!("Life: {}", self.player.hp);
+            self.text_fields.insert(TextTag::ShieldHp1, TextField{ tag: TextTag::ShieldHp1, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 3.5, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
+            self.text_fields.insert(TextTag::ShieldHp2, TextField{ tag: TextTag::ShieldHp2, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(0.0, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
+            self.text_fields.insert(TextTag::ShieldHp3, TextField{ tag: TextTag::ShieldHp3, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(window_width / 3.5, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
+
+            self.max_score = self.score;
+            self.score = 0;
+
+            let score_text = self.text_fields.get_mut(&TextTag::Score);
+            match score_text {
+                Some(text_field) => {
+                    text_field.text = format!("Score: {}", self.score);
+                }
+                _=> ()
             }
-            _=> ()
+
+            let max_score_text = self.text_fields.get_mut(&TextTag::MaxScore);
+            match max_score_text {
+                Some(text_field) => {
+                    text_field.text = format!("Max score: {}", self.max_score);
+                }
+                _=> ()
+            }
+
+            let player_life_text = self.text_fields.get_mut(&TextTag::PlayerLife);
+            match player_life_text {
+                Some(text_field) => {
+                    text_field.text = format!("Life: {}", self.player.hp);
+                }
+                _=> ()
+            }
         }
     }
 
@@ -777,9 +800,6 @@ impl GameState {
                         }
                         ActorType::EnemyC => {
                             self.score += 150;
-                        }
-                        ActorType::EnemyE => {
-                            self.score += 250;
                         }
                         _ => ()
                     }
@@ -923,6 +943,7 @@ impl event::EventHandler for GameState {
             if self.enemies_controler.time_to_update == 0.0 {
                 self.enemies_controler.enemies_rect = get_enemies_rect(&self.enemies);
             }
+
             enemies_check_collision_with_walls(&mut self.enemies_controler, &mut self.enemies, self.window.size);
             
             enemies_shoot(&mut self.enemies_controler, &self.enemies, &mut self.enemy_bullets, delta_time);
@@ -930,8 +951,12 @@ impl event::EventHandler for GameState {
             self.handle_collision(ctx)?;
             self.clear_dead_actors();
 
-            if self.player.hp <= 0.0 {
-                self.reset_game();
+            if self.player.hp <= 0.0 || check_if_enemies_reached_base(&self.enemies_controler) {
+                self.reset_game(true);
+            }
+
+            if self.enemies.is_empty() {
+                self.reset_game(false);
             }
         }
 
@@ -939,7 +964,7 @@ impl event::EventHandler for GameState {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
-        let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.2, 1.0]));
+        let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::from([0.0, 0.0, 0.0, 1.0]));
 
         let assets = &mut self.assets;
         let world_coords = (self.window.size.x, self.window.size.y);
