@@ -93,7 +93,7 @@ impl Actor {
 const PLAYER_LIFE : f32 = 3.0;
 const BULLET_LIFE : f32 = 1.0;
 const ENEMY_LIFE : f32 = 1.0;
-const SHIELD_LIFE : f32 = 10.0;
+const SHIELD_LIFE : f32 = 5.0;
 const PLAYER_SPEED : f32 = 100.0; //320
 const PLAYER_SHOT_TIME : f32 = 0.5;
 const PLAYER_BULLET_SPEED : f32 = 750.0;    //750
@@ -415,6 +415,43 @@ fn enemies_shoot(enemies_controler: &mut EnemiesControler, enemies: &Vec<Actor>,
     }
 }
 
+fn damage_shield(shied_index: usize, shield: &mut Actor, bullet: &mut Actor, text_fields: &mut HashMap<TextTag, TextField>,) {
+    shield.hp -= 1.0;
+    bullet.hp = -1.0;
+
+    let shield_text_tag = match shied_index {
+        0 => {
+            Some(TextTag::ShieldHp1)
+        }
+        1 => {
+            Some(TextTag::ShieldHp2)
+        }
+        2 => {
+            Some(TextTag::ShieldHp3)
+        }
+        _ => { None } 
+    };
+
+    match shield_text_tag {
+        Some(tag) => {
+            let score_text = text_fields.get_mut(&tag);
+
+            match score_text {
+                Some(text_field) => {
+                    if shield.hp <= 0.0 {
+                        text_fields.remove(&tag);
+                    }
+                    else {
+                        text_field.text = format!("{}", shield.hp);   
+                    }
+                }
+                _=> ()
+            }
+        }
+        _ => ()
+    }
+}
+
 fn get_shield_damage_texture(damage_data: &Vec<bool>) -> Vec<u8> {
     let mut clear_damage_f = vec![f16::from_f32(0.0_f32); 56 * 41 * 4];
         
@@ -606,7 +643,11 @@ impl GameState {
         let mut text_hash_map = HashMap::new();
         text_hash_map.insert(TextTag::MaxScore, TextField{ tag: TextTag::MaxScore, text: String::from("Max score: 0"), text_size: SMALL_TEXT_SIZE, position: Vec2::new(-window_width / 2.6, -window_height / 2.25), scale: Vec2::new(1.0, 1.0) });
         text_hash_map.insert(TextTag::Score, TextField{ tag: TextTag::Score, text: String::from("Score: 0"), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 2.6, -window_height / 2.4), scale: Vec2::new(1.0, 1.0) });
-        text_hash_map.insert(TextTag::PlayerLife, TextField{ tag: TextTag::PlayerLife, text: String::from("Life: 3"), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 2.6, window_height / 2.25), scale: Vec2::new(1.0, 1.0) });
+        text_hash_map.insert(TextTag::PlayerLife, TextField{ tag: TextTag::PlayerLife, text: format!("Life: {}", PLAYER_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 2.6, window_height / 2.25), scale: Vec2::new(1.0, 1.0) });
+        
+        text_hash_map.insert(TextTag::ShieldHp1, TextField{ tag: TextTag::ShieldHp1, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 3.5, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
+        text_hash_map.insert(TextTag::ShieldHp2, TextField{ tag: TextTag::ShieldHp2, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(0.0, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
+        text_hash_map.insert(TextTag::ShieldHp3, TextField{ tag: TextTag::ShieldHp3, text: format!("{}", SHIELD_LIFE), text_size: SMALL_TEXT_SIZE , position: Vec2::new(window_width / 3.5, window_height / 4.5), scale: Vec2::new(1.0, 1.0) });
 
         let assets = Assets::new(ctx);
         let mut player = create_player();
@@ -781,10 +822,10 @@ impl GameState {
                 }
 
                 let shield_rect =  shield.get_rect();
-                let outer_hit = point_in_rect(&bullet_top, &shield_rect) | point_in_rect(&bullet_down, &shield_rect);
-
-                if outer_hit {
-                 
+                let hit = point_in_rect(&bullet_top, &shield_rect) | point_in_rect(&bullet_down, &shield_rect);
+                
+                if hit {
+                    damage_shield(i, shield, player_bullet, &mut self.text_fields);
                 }
             }
         }
@@ -826,6 +867,24 @@ impl GameState {
                         player_bullet.hp = 0.0;
                         enemy_bullet.hp = 0.0;
                     }
+                }
+            }
+
+            if enemy_bullet.hp < 0.0 {
+                continue;
+            }
+
+            //Shields
+            for (i, shield) in self.shields.iter_mut().enumerate() {
+                if shield.hp <= 0.0 {
+                    continue;
+                }
+                
+                let shield_rect =  shield.get_rect();
+                let hit = point_in_rect(&bullet_top, &shield_rect) | point_in_rect(&bullet_down, &shield_rect);
+                
+                if hit {
+                    damage_shield(i, shield, enemy_bullet, &mut self.text_fields);
                 }
             }
         }
@@ -893,7 +952,9 @@ impl event::EventHandler for GameState {
         }
 
         for shield in &self.shields {
-            draw_actor(assets, &mut canvas, shield, world_coords);
+            if shield.hp > 0.0 {
+                draw_actor(assets, &mut canvas, shield, world_coords);
+            }
         }
 
         for bullet in &self.player_bullets {
