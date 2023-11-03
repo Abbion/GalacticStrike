@@ -1,16 +1,20 @@
 //! The simplest possible example that does something.
 #![allow(clippy::unnecessary_wraps)]
 
-use std::collections::btree_map::Range;
-use std::vec;
+use std::collections::HashMap;
+use std::{vec, string};
+use std::fs::File;
+use ggez::context::Has;
 use rand::Rng;
+use std::mem;
+use half::f16;
 
 use ggez::audio;
 use ggez::audio::SoundSource;
 use ggez::conf;
 use ggez::event::{self, EventHandler};
 use ggez::glam::*;
-use ggez::graphics::{self, Color, Rect};
+use ggez::graphics::{self, Color, Rect, Text};
 use ggez::input::keyboard::KeyCode;
 use ggez::timer;
 use ggez::{Context, ContextBuilder, GameResult};
@@ -25,7 +29,17 @@ enum ActorType {
     EnemyB,
     EnemyC,
     EnemyE,
-    Shield,
+    Shield
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum TextTag {
+    Score,
+    MaxScore,
+    PlayerLife,
+    ShieldHp1,
+    ShieldHp2,
+    ShieldHp3,
 }
 
 #[derive(PartialEq)]
@@ -49,6 +63,14 @@ struct Actor{
     scale: Vec2,
     hp: f32,
 }
+
+struct TextField{
+    tag: TextTag,
+    text: String,
+    text_size: f32,
+    position: Vec2,
+    scale: Vec2,
+}
 struct EnemiesControler{
     enemies_rect: Rect,
     time_to_update: f32,
@@ -64,7 +86,7 @@ struct EnemiesControler{
 
 impl Actor {
     fn get_rect(&self) -> Rect {
-        Rect{ x: self.position.x - (self.size.x / 2.0), y: self.position.y - (self.size.y / 2.0), w: self.position.x + (self.size.x / 2.0), h: self.position.y + (self.size.y / 2.0) }
+        Rect{ x: self.position.x - (self.size.x / 2.0), y: self.position.y - (self.size.y / 2.0), w: self.size.x, h: self.size.y }
     }
 }
 
@@ -72,7 +94,7 @@ const PLAYER_LIFE : f32 = 3.0;
 const BULLET_LIFE : f32 = 1.0;
 const ENEMY_LIFE : f32 = 1.0;
 const SHIELD_LIFE : f32 = 10.0;
-const PLAYER_SPEED : f32 = 320.0;
+const PLAYER_SPEED : f32 = 100.0; //320
 const PLAYER_SHOT_TIME : f32 = 0.5;
 const PLAYER_BULLET_SPEED : f32 = 750.0;    //750
 const ENEMY_BULLET_SPEED_SLOW : f32 = 350.0; //350
@@ -84,6 +106,8 @@ const ENEMY_SCALE : f32 = 0.7;
 const ENEMY_START_TICK: f32 = 2.0;
 const ENEMY_START_SHOT_TIMER: f32 = 3.0;
 const ENEMY_JUMP : f32 = 10.0;
+
+const SMALL_TEXT_SIZE : f32 = 16.0;
 
 fn create_player() -> Actor {
     Actor { 
@@ -342,21 +366,11 @@ fn get_enemies_rect(enemies: &Vec<Actor>) -> Rect
     for enemy in enemies.iter().skip(1) {
         let enemie_rect = enemy.get_rect();
 
-        if enemie_rect.x < enemies_rect.x {
-            enemies_rect.x = enemie_rect.x
-        }
-
-        if enemie_rect.y < enemies_rect.y {
-            enemies_rect.y = enemie_rect.y
-        }
-
-        if enemie_rect.w > enemies_rect.w {
-            enemies_rect.w = enemie_rect.w
-        }
-
-        if enemie_rect.h > enemies_rect.h {
-            enemies_rect.h = enemie_rect.h
-        }
+        enemies_rect.x = enemies_rect.x.min(enemie_rect.x);
+        enemies_rect.y = enemies_rect.y.min(enemie_rect.y);
+        
+        enemies_rect.w = enemies_rect.w.max(enemie_rect.x + enemie_rect.w);
+        enemies_rect.h = enemies_rect.h.max(enemie_rect.y + enemie_rect.h);
     }
 
     enemies_rect
@@ -401,6 +415,21 @@ fn enemies_shoot(enemies_controler: &mut EnemiesControler, enemies: &Vec<Actor>,
     }
 }
 
+fn get_shield_damage_texture(damage_data: &Vec<bool>) -> Vec<u8> {
+    let mut clear_damage_f = vec![f16::from_f32(0.0_f32); 56 * 41 * 4];
+        
+    for (i, damage) in damage_data.iter().enumerate() {
+        if !*damage {
+            clear_damage_f[i*4 + 3] = f16::from_f32(1.0_f32);
+        }
+    }
+
+    let len = clear_damage_f.len() * mem::size_of::<f16>();
+    let ptr = clear_damage_f.as_ptr() as *const u8;
+
+    unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+}
+
 #[derive(Debug)]
 struct InputState {
     left: bool,
@@ -426,7 +455,7 @@ struct Assets {
     shield_image: graphics::Image,
     player_shot_sound: audio::Source,
     hit_sound: audio::Source,
-    enemie_images: Vec<graphics::Image>,
+    enemie_images: Vec<graphics::Image>
 }
 
 impl Assets {
@@ -522,15 +551,33 @@ fn draw_actor(assets: &mut Assets, canvas: &mut graphics::Canvas, actor: &Actor,
     canvas.draw(image, drawparams);
 }
 
-fn point_in_rect(point: &Vec2, rect: &Rect) -> bool {
+fn draw_text(canvas: &mut graphics::Canvas, text_field: &TextField, world_coords: (f32, f32)) {
+    let (screen_w, screen_h) = world_coords;
+    let pos = world_to_screen_coords(screen_w, screen_h, text_field.position);
+    let drawparams = graphics::DrawParam::new()
+    .dest(pos)
+    .scale(text_field.scale)
+    .offset(Vec2::new(0.5, 0.5));
 
-    if point.x > rect.x && point.x < rect.w &&
-       point.y > rect.y && point.y < rect.h
+    let mut text = Text::new(text_field.text.clone());
+    text.set_scale(text_field.text_size);
+    canvas.draw(&text, drawparams);
+}
+
+fn point_in_rect(point: &Vec2, rect: &Rect) -> bool {
+    if point.x > rect.left() && point.x < rect.right() &&
+       point.y < rect.bottom() && point.y > rect.top()
     {
        return true; 
     }
 
     false
+}
+
+fn point_position_in_rect(point: &Vec2, rect: &Rect) -> Vec2 {
+    let left = point.x - rect.left();
+    let bottom = point.y - rect.bottom();
+    Vec2::new(left, bottom)
 }
 
 struct GameState {
@@ -543,6 +590,9 @@ struct GameState {
     enemies: Vec<Actor>,
     shields: Vec<Actor>,
     enemies_controler: EnemiesControler,
+    text_fields: HashMap<TextTag, TextField>,
+    score: u32,
+    max_score: u32,
     window: Window,
 }
 
@@ -552,6 +602,11 @@ impl GameState {
         let window = Window {
             size : Vec2{ x : window_width, y : window_height }
         };
+        
+        let mut text_hash_map = HashMap::new();
+        text_hash_map.insert(TextTag::MaxScore, TextField{ tag: TextTag::MaxScore, text: String::from("Max score: 0"), text_size: SMALL_TEXT_SIZE, position: Vec2::new(-window_width / 2.6, -window_height / 2.25), scale: Vec2::new(1.0, 1.0) });
+        text_hash_map.insert(TextTag::Score, TextField{ tag: TextTag::Score, text: String::from("Score: 0"), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 2.6, -window_height / 2.4), scale: Vec2::new(1.0, 1.0) });
+        text_hash_map.insert(TextTag::PlayerLife, TextField{ tag: TextTag::PlayerLife, text: String::from("Life: 3"), text_size: SMALL_TEXT_SIZE , position: Vec2::new(-window_width / 2.6, window_height / 2.25), scale: Vec2::new(1.0, 1.0) });
 
         let assets = Assets::new(ctx);
         let mut player = create_player();
@@ -571,6 +626,9 @@ impl GameState {
             enemies: enemies,
             shields: shields,
             enemies_controler: create_enemies_controler(),
+            text_fields: text_hash_map,
+            score: 0,
+            max_score: 0,
             window
          })
     }
@@ -604,7 +662,7 @@ impl GameState {
         self.enemies.clear();
 
         let mut player = create_player();
-        player.position.y = (self.window.size.x / 2.0) - (self.window.size.y / 8.0);
+        player.position.y = (self.window.size.y / 2.0) - (self.window.size.y / 8.0);
         player.size = Vec2{ x: self.assets.player_image.width() as f32, y: self.assets.player_image.height() as f32 };
         let enemies = create_enemies(&self.assets);
 
@@ -612,35 +670,87 @@ impl GameState {
         self.enemies = enemies;
         self.player_shot_timeout = 0.0;
         self.enemies_controler = create_enemies_controler();
+        
+        self.max_score = self.score;
+        self.score = 0;
+
+        let score_text = self.text_fields.get_mut(&TextTag::Score);
+        match score_text {
+            Some(text_field) => {
+                text_field.text = format!("Score: {}", self.score);
+            }
+            _=> ()
+        }
+
+        let max_score_text = self.text_fields.get_mut(&TextTag::MaxScore);
+        match max_score_text {
+            Some(text_field) => {
+                text_field.text = format!("Max score: {}", self.max_score);
+            }
+            _=> ()
+        }
+
+        let player_life_text = self.text_fields.get_mut(&TextTag::PlayerLife);
+        match player_life_text {
+            Some(text_field) => {
+                text_field.text = format!("Life: {}", self.player.hp);
+            }
+            _=> ()
+        }
     }
 
     fn handle_collision(&mut self, ctx: &Context) -> GameResult {
         let mut update_enemies_rect = false;
 
-        for (i, enemie) in &mut self.enemies.iter_mut().enumerate()  {
-            if enemie.hp < 0.0 {
+        'outer: for player_bullet in &mut self.player_bullets {
+            if player_bullet.hp < 0.0 {
                 continue;
             }
+            
+            let bullet_rect = player_bullet.get_rect();
+            let bullet_top = Vec2::new((bullet_rect.left() + bullet_rect.right()) / 2.0, bullet_rect.top());
+            let bullet_down = Vec2::new((bullet_rect.left() + bullet_rect.right()) / 2.0, bullet_rect.bottom());
 
-            let enemie_rect =  enemie.get_rect();
-
-            'outer: for player_bullet in &mut self.player_bullets {
-                if player_bullet.hp < 0.0 {
+            //Enemies
+            for (i, enemie) in &mut self.enemies.iter_mut().enumerate()  {
+                if enemie.hp < 0.0 {
                     continue;
                 }
+                let enemie_rect =  enemie.get_rect();
 
-                let bullet_top = player_bullet.position + Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
-                let bullet_down = player_bullet.position - Vec2{x: 0.0, y: player_bullet.size.y / 2.0};
-
-                
                 let hit = point_in_rect(&bullet_top, &enemie_rect) | point_in_rect(&bullet_down, &enemie_rect);
-
+                
                 if hit {
                     player_bullet.hp = -1.0;
                     enemie.hp = -1.0;
                     self.assets.hit_sound.play(ctx)?;
                     update_enemies_rect = true;
                     self.enemies_controler.tick_time *= 0.8;
+
+                    match enemie.tag {
+                        ActorType::EnemyA => {
+                            self.score += 50;
+                        }
+                        ActorType::EnemyB => {
+                            self.score += 100;
+                        }
+                        ActorType::EnemyC => {
+                            self.score += 150;
+                        }
+                        ActorType::EnemyE => {
+                            self.score += 250;
+                        }
+                        _ => ()
+                    }
+
+                    let score_text = self.text_fields.get_mut(&TextTag::Score);
+
+                    match score_text {
+                        Some(text_field) => {
+                            text_field.text = format!("Score: {}", self.score);
+                        }
+                        _=> ()
+                    }
                     
                     //Updates the enemies_alive_flags setting false at position where the enemie was destroied
                     let mut index_of_enemy : usize = 0;
@@ -659,6 +769,24 @@ impl GameState {
                     }
                 }
             }
+
+            if player_bullet.hp < 0.0 {
+                continue;
+            }
+
+            //Shields
+            for (i, shield) in self.shields.iter_mut().enumerate() {
+                if shield.hp <= 0.0 {
+                    continue;
+                }
+
+                let shield_rect =  shield.get_rect();
+                let outer_hit = point_in_rect(&bullet_top, &shield_rect) | point_in_rect(&bullet_down, &shield_rect);
+
+                if outer_hit {
+                 
+                }
+            }
         }
 
         if update_enemies_rect == true {
@@ -667,8 +795,10 @@ impl GameState {
 
         for enemy_bullet in &mut self.enemy_bullets {
             let player_rect = self.player.get_rect();
-            let bullet_top = enemy_bullet.position + Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
-            let bullet_down = enemy_bullet.position - Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+
+            let enemy_bullet_rect = enemy_bullet.get_rect();
+            let bullet_top = Vec2::new((enemy_bullet_rect.left() + enemy_bullet_rect.right()) / 2.0, enemy_bullet_rect.top());
+            let bullet_down = Vec2::new((enemy_bullet_rect.left() + enemy_bullet_rect.right()) / 2.0, enemy_bullet_rect.bottom());
 
             //Hit player
             let hit = point_in_rect(&bullet_top, &player_rect, ) | point_in_rect(&bullet_down, &player_rect);
@@ -676,19 +806,26 @@ impl GameState {
             if hit {
                 enemy_bullet.hp = 0.0;
                 self.player.hp -= 1.0;
+
+                let player_life_text = self.text_fields.get_mut(&TextTag::PlayerLife);
+                match player_life_text {
+                    Some(text_field) => {
+                        text_field.text = format!("Life: {}", self.player.hp);
+                    }
+                    _=> ()
+                }
             }
+            else {
+                //Hit player bullet
+                for player_bullet in &mut self.player_bullets {
+                    let player_bullet_rect = player_bullet.get_rect();
 
-            //Hit player bullet
-            for player_bullet in &mut self.player_bullets {
-                let player_bullet_rect = player_bullet.get_rect();
-                let bullet_top = enemy_bullet.position + Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
-                let bullet_down = enemy_bullet.position - Vec2{x: 0.0, y: enemy_bullet.size.y / 2.0};
+                    let hit = point_in_rect(&bullet_top, &player_bullet_rect, ) | point_in_rect(&bullet_down, &player_bullet_rect);
 
-                let hit = point_in_rect(&bullet_top, &player_bullet_rect, ) | point_in_rect(&bullet_down, &player_bullet_rect);
-
-                if hit {
-                    player_bullet.hp = 0.0;
-                    enemy_bullet.hp = 0.0;
+                    if hit {
+                        player_bullet.hp = 0.0;
+                        enemy_bullet.hp = 0.0;
+                    }
                 }
             }
         }
@@ -743,13 +880,21 @@ impl event::EventHandler for GameState {
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
-        let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.3, 1.0]));
+        let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::from([0.1, 0.2, 0.2, 1.0]));
 
         let assets = &mut self.assets;
         let world_coords = (self.window.size.x, self.window.size.y);
 
         let p = &self.player;
         draw_actor(assets, &mut canvas, p, world_coords);
+        
+        for enemie in &self.enemies{
+            draw_actor(assets, &mut canvas, enemie, world_coords);
+        }
+
+        for shield in &self.shields {
+            draw_actor(assets, &mut canvas, shield, world_coords);
+        }
 
         for bullet in &self.player_bullets {
             draw_actor(assets, &mut canvas, &bullet, world_coords);
@@ -758,13 +903,9 @@ impl event::EventHandler for GameState {
         for bullet in &self.enemy_bullets {
             draw_actor(assets, &mut canvas, &bullet, world_coords);
         }
-        
-        for enemie in &self.enemies{
-            draw_actor(assets, &mut canvas, enemie, world_coords);
-        }
 
-        for shield in &self.shields {
-            draw_actor(assets, &mut canvas, shield, world_coords);
+        for (text_tag, text_field) in &self.text_fields {
+            draw_text(&mut canvas, text_field, world_coords);
         }
 
         canvas.finish(ctx)?;
