@@ -1,5 +1,5 @@
 # Galactic Strike
-Basic Space invaiders clone writen in Rust programming language.
+Basic Space Invaders clone writen in Rust programming language.
 
 ## How to play
 1. Open the project and build it.
